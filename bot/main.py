@@ -31,7 +31,7 @@ async def main():
 
     logger.info("🤖 RevitServer bot started")
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query", "channel_post"])
 
 
 if __name__ == "__main__":
