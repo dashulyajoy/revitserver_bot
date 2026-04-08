@@ -136,6 +136,20 @@ async def cmd_kbclear(message: Message, bot: Bot):
     await message.answer("✅ Все правки удалены.")
 
 # ─────────────────────────────────────────────
+# /kb — добавить правку напрямую
+# ─────────────────────────────────────────────
+
+@router.message(Command("kb"))
+async def cmd_kb(message: Message, bot: Bot):
+    text = message.text.replace("/kb", "", 1).strip()
+    if not text:
+        await message.answer("Напишите правку после команды:\n/kb Текст правки")
+        return
+    add_kb_message(text)
+    msgs = get_kb_messages()
+    await message.answer(f"✅ Сохранено. Всего правок: {len(msgs)}")
+
+# ─────────────────────────────────────────────
 # /testlead — тест уведомления менеджеру
 # ─────────────────────────────────────────────
 
@@ -283,20 +297,6 @@ async def handle_message(message: Message, bot: Bot):
 # ─────────────────────────────────────────────
 # Вспомогательная функция эскалации
 # ─────────────────────────────────────────────
-
-@router.message()
-async def handle_kb_message(message: Message, bot: Bot):
-    """Перехватывает сообщения и форварды из чата правок."""
-    if not KB_CHAT_ID or str(message.chat.id) != str(KB_CHAT_ID):
-        return
-    text = message.text or message.caption or ""
-    text = text.strip()
-    if text and not text.startswith("/"):
-        add_kb_message(text)
-        try:
-            await message.react([{"type": "emoji", "emoji": "✅"}])
-        except Exception:
-            await message.answer("✅ Правка сохранена")
 
 
 async def _escalate(
