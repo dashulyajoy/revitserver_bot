@@ -9,7 +9,8 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from claude_client import ask_claude
 from dialog_manager import dialog_manager
-from config import MANAGER_CHAT_ID, ESCALATION_THRESHOLD
+from config import MANAGER_CHAT_ID, ESCALATION_THRESHOLD, KB_CHAT_ID
+from kb_updater import add_kb_message, get_kb_messages, remove_kb_message, clear_kb
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -86,14 +87,53 @@ async def cmd_help(message: Message):
 async def cmd_kbstatus(message: Message, bot: Bot):
     from kb_updater import get_kb_updates
     from config import KB_CHAT_ID
-    updates = await get_kb_updates()
     if not KB_CHAT_ID:
         await message.answer("KB_CHAT_ID не задан в переменных окружения.")
         return
-    if updates:
-        await message.answer(f"Правки загружены из чата {KB_CHAT_ID}:\n\n{updates[:1000]}")
+    msgs = get_kb_messages()
+    if msgs:
+        text = "\n".join(f"- {m}" for m in msgs)
+        await message.answer(f"Правок загружено: {len(msgs)}\n\n{text[:1000]}")
     else:
-        await message.answer(f"Чат {KB_CHAT_ID} подключён, но правок пока нет.")
+        await message.answer(f"Чат {KB_CHAT_ID} подключён, правок пока нет.\n\nНапишите что-нибудь в чат правок — бот подхватит сразу.")
+
+# ─────────────────────────────────────────────
+# /kblist — список правок
+# ─────────────────────────────────────────────
+
+@router.message(Command("kblist"))
+async def cmd_kblist(message: Message, bot: Bot):
+    msgs = get_kb_messages()
+    if not msgs:
+        await message.answer("Правок пока нет.")
+        return
+    text = "\n".join(f"{i+1}. {m[:100]}" for i, m in enumerate(msgs))
+    await message.answer(f"Правок: {len(msgs)}\n\n{text}\n\nЧтобы удалить: /kbdel [номер]\nОчистить все: /kbclear")
+
+# ─────────────────────────────────────────────
+# /kbdel — удалить правку по номеру
+# ─────────────────────────────────────────────
+
+@router.message(Command("kbdel"))
+async def cmd_kbdel(message: Message, bot: Bot):
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("Укажите номер правки: /kbdel 3")
+        return
+    index = int(args[1]) - 1
+    if remove_kb_message(index):
+        await message.answer(f"✅ Правка {args[1]} удалена.")
+    else:
+        await message.answer("Правка с таким номером не найдена.")
+
+# ─────────────────────────────────────────────
+# /kbclear — очистить все правки
+# ─────────────────────────────────────────────
+
+@router.message(Command("kbclear"))
+async def cmd_kbclear(message: Message, bot: Bot):
+    clear_kb()
+    await message.answer("✅ Все правки удалены.")
 
 # ─────────────────────────────────────────────
 # /testlead — тест уведомления менеджеру
@@ -182,6 +222,19 @@ async def cb_escalate_manual(callback, bot: Bot):
                     username=callback.from_user.username,
                     full_name=callback.from_user.full_name)
 
+
+# ─────────────────────────────────────────────
+# Обработчик сообщений из чата с правками БЗ
+# ─────────────────────────────────────────────
+
+@router.message(F.text, F.chat.id == int(KB_CHAT_ID) if KB_CHAT_ID else F.text == "___never___")
+async def handle_kb_message(message: Message, bot: Bot):
+    """Перехватывает сообщения из чата правок и сохраняет в память."""
+    add_kb_message(message.text.strip())
+    try:
+        await message.react([{"type": "emoji", "emoji": "✅"}])
+    except Exception:
+        await message.answer("✅ Правка сохранена")
 
 # ─────────────────────────────────────────────
 # Основной обработчик сообщений
