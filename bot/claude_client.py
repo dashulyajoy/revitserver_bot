@@ -1,11 +1,11 @@
 """
-Клиент для работы с DeepSeek API (совместим с OpenAI-форматом)
+Клиент для работы с Claude API (Anthropic)
 """
 
 import json
 import logging
 import httpx
-from config import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, CLAUDE_MAX_TOKENS
+from config import ANTHROPIC_API_KEY, CLAUDE_MAX_TOKENS
 from knowledge_base import SYSTEM_PROMPT
 from kb_updater import get_kb_updates
 
@@ -14,54 +14,52 @@ logger = logging.getLogger(__name__)
 
 async def ask_claude(history: list[dict]) -> tuple[str, bool, str]:
     """
-    Отправляет историю диалога в DeepSeek и возвращает ответ.
+    Отправляет историю диалога в Claude и возвращает ответ.
 
     Returns:
         (text_response, should_escalate, escalation_reason)
     """
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
     }
 
     # Подгружаем актуальные правки из чата менеджера
     kb_updates = await get_kb_updates()
     full_prompt = SYSTEM_PROMPT + kb_updates
 
-    messages = [{"role": "system", "content": full_prompt}] + history
-
     payload = {
-        "model": DEEPSEEK_MODEL,
+        "model": "claude-sonnet-4-20250514",
         "max_tokens": CLAUDE_MAX_TOKENS,
-        "messages": messages,
+        "system": full_prompt,
+        "messages": history,
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                "https://api.deepseek.com/chat/completions",
+                "https://api.anthropic.com/v1/messages",
                 headers=headers,
                 json=payload,
             )
             response.raise_for_status()
             data = response.json()
-            raw_text = data["choices"][0]["message"]["content"]
+            raw_text = data["content"][0]["text"]
 
-            # Проверяем, нет ли маркера эскалации в ответе
+            # Проверяем маркер эскалации
             should_escalate = False
             escalation_reason = ""
             clean_text = raw_text
 
             if '{"escalate": true' in raw_text or '"escalate":true' in raw_text:
                 should_escalate = True
-                # Извлекаем JSON маркер из текста
                 try:
                     start = raw_text.find('{"escalate"')
                     end = raw_text.find('}', start) + 1
                     json_str = raw_text[start:end]
                     meta = json.loads(json_str)
                     escalation_reason = meta.get("reason", "")
-                    # Убираем JSON из текста для пользователя
                     clean_text = raw_text[:start].strip() + raw_text[end:].strip()
                     clean_text = clean_text.strip()
                 except Exception:
@@ -70,8 +68,8 @@ async def ask_claude(history: list[dict]) -> tuple[str, bool, str]:
             return clean_text, should_escalate, escalation_reason
 
     except httpx.HTTPStatusError as e:
-        logger.error(f"DeepSeek API HTTP error: {e.response.status_code} {e.response.text}")
-        return "Извините, временные технические неполадки. Попробуйте чуть позже или напишите напрямую в @revitserver", False, ""
+        logger.error(f"Claude API HTTP error: {e.response.status_code} {e.response.text}")
+        return "Извините, временные неполадки. Напишите напрямую: @revitserver", False, ""
     except Exception as e:
-        logger.error(f"DeepSeek API error: {e}")
-        return "Что-то пошло не так. Напишите нам напрямую — @revitserver", False, ""
+        logger.error(f"Claude API error: {e}")
+        return "Что-то пошло не так. Напишите нам: @revitserver", False, ""
