@@ -227,14 +227,6 @@ async def cb_escalate_manual(callback, bot: Bot):
 # Обработчик сообщений из чата с правками БЗ
 # ─────────────────────────────────────────────
 
-@router.message(F.text, F.chat.id == int(KB_CHAT_ID) if KB_CHAT_ID else F.text == "___never___")
-async def handle_kb_message(message: Message, bot: Bot):
-    """Перехватывает сообщения из чата правок и сохраняет в память."""
-    add_kb_message(message.text.strip())
-    try:
-        await message.react([{"type": "emoji", "emoji": "✅"}])
-    except Exception:
-        await message.answer("✅ Правка сохранена")
 
 # ─────────────────────────────────────────────
 # Основной обработчик сообщений
@@ -291,6 +283,21 @@ async def handle_message(message: Message, bot: Bot):
 # ─────────────────────────────────────────────
 # Вспомогательная функция эскалации
 # ─────────────────────────────────────────────
+
+@router.message()
+async def handle_kb_message(message: Message, bot: Bot):
+    """Перехватывает сообщения и форварды из чата правок."""
+    if not KB_CHAT_ID or str(message.chat.id) != str(KB_CHAT_ID):
+        return
+    text = message.text or message.caption or ""
+    text = text.strip()
+    if text and not text.startswith("/"):
+        add_kb_message(text)
+        try:
+            await message.react([{"type": "emoji", "emoji": "✅"}])
+        except Exception:
+            await message.answer("✅ Правка сохранена")
+
 
 async def _escalate(
     message: Message,
