@@ -5,7 +5,7 @@
 import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ContentType
 import base64
 import httpx
 import base64
@@ -251,7 +251,7 @@ async def cb_escalate_manual(callback, bot: Bot):
 # ─────────────────────────────────────────────
 
 @router.message(F.photo)
-async def handle_photo(message: Message, bot: Bot):
+async def handle_photo(message: Message, bot: Bot):  # noqa
     chat_id = message.chat.id
 
     if dialog_manager.is_escalated(chat_id):
@@ -285,58 +285,6 @@ async def handle_photo(message: Message, bot: Bot):
                 "type": "text",
                 "text": caption
             }
-        ]
-    }
-
-    dialog_manager._histories[chat_id].append(user_message)
-    dialog_manager._message_counts[chat_id] += 1
-
-    await bot.send_chat_action(chat_id, "typing")
-
-    history = dialog_manager.get_history(chat_id)
-    response_text, should_escalate, escalation_reason = await ask_claude(history)
-
-    dialog_manager.add_assistant_message(chat_id, response_text)
-
-    if response_text:
-        await message.answer(response_text)
-
-    if should_escalate:
-        await _escalate(message, bot, reason=escalation_reason)
-
-# ─────────────────────────────────────────────
-# Обработчик фото
-# ─────────────────────────────────────────────
-
-@router.message(F.photo)
-async def handle_photo(message: Message, bot: Bot):
-    chat_id = message.chat.id
-
-    if dialog_manager.is_escalated(chat_id):
-        return
-
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    file_url = f"https://api.telegram.org/file/bot{bot.token}/{file.file_path}"
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(file_url)
-        image_data = base64.b64encode(resp.content).decode("utf-8")
-
-    caption = message.caption or "Посмотри на этот скриншот и помоги разобраться с проблемой."
-
-    user_message = {
-        "role": "user",
-        "content": [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": image_data,
-                }
-            },
-            {"type": "text", "text": caption}
         ]
     }
 
