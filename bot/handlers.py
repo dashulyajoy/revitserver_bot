@@ -339,12 +339,39 @@ async def handle_message(message: Message, bot: Bot):
     # Добавляем сообщение пользователя в историю
     dialog_manager.add_user_message(chat_id, user_text)
 
-    # Отменяем предыдущий отложенный ответ если есть (группировка быстрых сообщений)
+    # Группировка быстрых сообщений — ждём 2.5 сек, если придёт новое — оно само ответит
     if chat_id in _pending:
         _pending[chat_id].cancel()
+        del _pending[chat_id]
 
-    # Ждём 2 секунды — вдруг придёт ещё одно сообщение
-    await asyncio.sleep(2)
+    async def delayed_response():
+        try:
+            await asyncio.sleep(2.5)
+            if chat_id in _pending:
+                del _pending[chat_id]
+            await bot.send_chat_action(chat_id, "typing")
+            history = dialog_manager.get_history(chat_id)
+            response_text, should_escalate, escalation_reason = await ask_claude(history)
+            dialog_manager.add_assistant_message(chat_id, response_text)
+            if response_text:
+                await message.answer(clean_markdown(response_text))
+            if should_escalate:
+                await _escalate(message, bot, reason=escalation_reason)
+            count = dialog_manager.get_message_count(chat_id)
+            if count == ESCALATION_THRESHOLD:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="👨‍💼 Поговорить с менеджером", callback_data="escalate_manual"),
+                ]])
+                await message.answer(
+                    "Если хотите — могу передать вас живому специалисту.",
+                    reply_markup=keyboard,
+                )
+        except asyncio.CancelledError:
+            pass
+
+    task = asyncio.create_task(delayed_response())
+    _pending[chat_id] = task
+    return
 
     # Показываем "печатает..."
     await bot.send_chat_action(chat_id, "typing")
