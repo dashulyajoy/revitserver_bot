@@ -15,6 +15,25 @@ from claude_client import ask_claude
 from dialog_manager import dialog_manager
 from config import MANAGER_CHAT_ID, ESCALATION_THRESHOLD, KB_CHAT_ID
 from kb_updater import add_kb_message, get_kb_messages, remove_kb_message, clear_kb
+import asyncio
+
+# Очередь сообщений для группировки быстрых сообщений
+_pending: dict[int, asyncio.Task] = {}
+
+def clean_markdown(text: str) -> str:
+    """Убирает markdown-символы из текста."""
+    import re
+    # Убираем **жирный** и *курсив*
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    # Убираем __подчёркивание__
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    # Убираем `код`
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    # Убираем ### заголовки
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    return text
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -299,7 +318,7 @@ async def handle_photo(message: Message, bot: Bot):  # noqa
     dialog_manager.add_assistant_message(chat_id, response_text)
 
     if response_text:
-        await message.answer(response_text)
+        await message.answer(clean_markdown(response_text))
 
     if should_escalate:
         await _escalate(message, bot, reason=escalation_reason)
@@ -320,6 +339,13 @@ async def handle_message(message: Message, bot: Bot):
     # Добавляем сообщение пользователя в историю
     dialog_manager.add_user_message(chat_id, user_text)
 
+    # Отменяем предыдущий отложенный ответ если есть (группировка быстрых сообщений)
+    if chat_id in _pending:
+        _pending[chat_id].cancel()
+
+    # Ждём 2 секунды — вдруг придёт ещё одно сообщение
+    await asyncio.sleep(2)
+
     # Показываем "печатает..."
     await bot.send_chat_action(chat_id, "typing")
 
@@ -330,9 +356,9 @@ async def handle_message(message: Message, bot: Bot):
     # Сохраняем ответ ассистента
     dialog_manager.add_assistant_message(chat_id, response_text)
 
-    # Отправляем ответ пользователю
+    # Отправляем ответ пользователю (очищаем markdown)
     if response_text:
-        await message.answer(response_text)
+        await message.answer(clean_markdown(response_text))
 
     # Эскалация по решению Claude
     if should_escalate:
