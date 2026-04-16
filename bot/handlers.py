@@ -387,27 +387,34 @@ async def _escalate(
     # Уведомляем менеджера
     if MANAGER_CHAT_ID:
         history = dialog_manager.get_history(chat_id)
-        history_text = "\n".join(
-            f"{'👤' if m['role'] == 'user' else '🤖'} {m['content']}"
-            for m in history[-10:]  # последние 10 сообщений
-        )
 
-        user_link = f"@{uname}" if uname else f"[{fname}](tg://user?id={uid})"
+        def get_content_text(m):
+            c = m.get('content', '')
+            if isinstance(c, str):
+                return c[:200]
+            if isinstance(c, list):
+                # Есть картинки — берём только текстовые части
+                texts = [p.get('text', '') for p in c if isinstance(p, dict) and p.get('type') == 'text']
+                return ' '.join(texts)[:200] + ' [фото]'
+            return str(c)[:200]
+
+        history_lines = []
+        for m in history[-10:]:
+            icon = '👤' if m['role'] == 'user' else '🤖'
+            history_lines.append(f"{icon} {get_content_text(m)}")
+        history_text = "\n".join(history_lines)
+
+        user_link = f"@{uname}" if uname else f"{fname} (id:{uid})"
 
         manager_msg = (
-            f"🔔 *Горячий лид / Эскалация*\n\n"
-            f"👤 Пользователь: {user_link}\n"
-            f"🆔 ID: `{uid}`\n"
-            f"📋 Причина: {reason}\n\n"
-            f"*Последний диалог:*\n"
-            f"```\n{history_text}\n```"
+            f"Горячий лид / Эскалация\n\n"
+            f"Пользователь: {user_link}\n"
+            f"ID: {uid}\n"
+            f"Причина: {reason}\n\n"
+            f"Последний диалог:\n{history_text}"
         )
 
         try:
-            await bot.send_message(
-                MANAGER_CHAT_ID,
-                manager_msg,
-                parse_mode="Markdown",
-            )
+            await bot.send_message(MANAGER_CHAT_ID, manager_msg)
         except Exception as e:
             logger.error(f"Failed to notify manager: {e}")
