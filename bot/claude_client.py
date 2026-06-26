@@ -1,7 +1,3 @@
-"""
-Клиент для работы с Claude API (Anthropic)
-"""
-
 import json
 import logging
 import httpx
@@ -13,24 +9,17 @@ logger = logging.getLogger(__name__)
 
 
 async def ask_claude(history: list[dict]) -> tuple[str, bool, str]:
-    """
-    Отправляет историю диалога в Claude и возвращает ответ.
-
-    Returns:
-        (text_response, should_escalate, escalation_reason)
-    """
     headers = {
         "Content-Type": "application/json",
         "x-api-key": ANTHROPIC_API_KEY,
         "anthropic-version": "2023-06-01",
     }
 
-    # Подгружаем актуальные правки из чата менеджера
     kb_updates = await get_kb_updates()
     full_prompt = SYSTEM_PROMPT + kb_updates
 
     payload = {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-6",
         "max_tokens": CLAUDE_MAX_TOKENS,
         "system": full_prompt,
         "messages": history,
@@ -47,7 +36,6 @@ async def ask_claude(history: list[dict]) -> tuple[str, bool, str]:
             data = response.json()
             raw_text = data["content"][0]["text"]
 
-            # Проверяем маркер эскалации
             should_escalate = False
             escalation_reason = ""
             clean_text = raw_text
@@ -69,7 +57,7 @@ async def ask_claude(history: list[dict]) -> tuple[str, bool, str]:
 
     except httpx.HTTPStatusError as e:
         logger.error(f"Claude API HTTP error: {e.response.status_code} {e.response.text}")
-        return "Извините, временные неполадки. Напишите напрямую: @revitserver", False, ""
+        return "Временные неполадки. Напишите напрямую: @revitserver", False, ""
     except Exception as e:
         logger.error(f"Claude API error: {e}")
         return "Что-то пошло не так. Напишите нам: @revitserver", False, ""

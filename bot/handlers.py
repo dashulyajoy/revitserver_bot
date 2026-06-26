@@ -1,166 +1,85 @@
-"""
-Обработчики сообщений Telegram бота
-"""
-
+import asyncio
+import base64
+import httpx
+import json
 import logging
+import re
+
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ContentType
-import base64
-import httpx
-import base64
-import httpx
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from claude_client import ask_claude
 from dialog_manager import dialog_manager
 from config import MANAGER_CHAT_ID, ESCALATION_THRESHOLD, KB_CHAT_ID
 from kb_updater import add_kb_message, get_kb_messages, remove_kb_message, clear_kb
-import asyncio
-
-# Очередь сообщений для группировки быстрых сообщений
-_pending: dict[int, asyncio.Task] = {}
-
-def clean_markdown(text: str) -> str:
-    """Убирает markdown-символы из текста."""
-    import re
-    # Убираем **жирный** и *курсив*
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    text = re.sub(r'\*(.+?)\*', r'\1', text)
-    # Убираем __подчёркивание__
-    text = re.sub(r'__(.+?)__', r'\1', text)
-    text = re.sub(r'_(.+?)_', r'\1', text)
-    # Убираем `код`
-    text = re.sub(r'`(.+?)`', r'\1', text)
-    # Убираем ### заголовки
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    return text
 
 logger = logging.getLogger(__name__)
 router = Router()
 
+_pending: dict[int, asyncio.Task] = {}
 
-# ─────────────────────────────────────────────
-# /start
-# ─────────────────────────────────────────────
+
+def clean_markdown(text: str) -> str:
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    return text
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    chat_id = message.chat.id
-    dialog_manager.reset(chat_id)
-
+    dialog_manager.reset(message.chat.id)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="💰 Тарифы", callback_data="info_prices"),
-            InlineKeyboardButton(text="🆓 Тест-драйв", callback_data="info_trial"),
+            InlineKeyboardButton(text="Тарифы", callback_data="info_prices"),
+            InlineKeyboardButton(text="Тест-драйв", callback_data="info_trial"),
         ],
         [
-            InlineKeyboardButton(text="🖥 Revit Server", callback_data="info_rs"),
-            InlineKeyboardButton(text="💻 Виртуальное рабочее место", callback_data="info_vdi"),
+            InlineKeyboardButton(text="Revit Server", callback_data="info_rs"),
+            InlineKeyboardButton(text="Виртуальное рабочее место", callback_data="info_vdi"),
         ],
         [
-            InlineKeyboardButton(text="👨‍💼 Связаться с менеджером", callback_data="escalate_manual"),
+            InlineKeyboardButton(text="Связаться с менеджером", callback_data="escalate_manual"),
         ],
     ])
-
     await message.answer(
-        "Привет! 👋 Я помощник RevitServer.ru\n\n"
-        "Помогу разобраться с совместной работой в Revit, подберу тариф "
-        "и отвечу на вопросы по поддержке.\n\n"
-        "Что вас интересует?",
+        "Здравствуйте. Помогу разобраться с совместной работой в Revit, "
+        "подберу тариф и отвечу на вопросы по поддержке.\n\nЧто вас интересует?",
         reply_markup=keyboard,
     )
 
 
-# ─────────────────────────────────────────────
-# /reset — сбросить диалог
-# ─────────────────────────────────────────────
-
 @router.message(Command("reset"))
 async def cmd_reset(message: Message):
     dialog_manager.reset(message.chat.id)
-    await message.answer("Диалог сброшен. Начнём сначала! Чем могу помочь?")
+    await message.answer("Диалог сброшен. Чем могу помочь?")
 
-
-# ─────────────────────────────────────────────
-# /help
-# ─────────────────────────────────────────────
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(
-        "🤖 *RevitServer.ru — бот поддержки*\n\n"
-        "Я могу помочь с:\n"
-        "• Вопросами о Revit Server и VDI\n"
-        "• Подбором тарифа под вашу команду\n"
-        "• Технической поддержкой\n"
-        "• Оформлением тест-драйва\n\n"
-        "Просто напишите ваш вопрос или используйте /start для меню.\n\n"
+        "Бот поддержки RevitServer.ru\n\n"
         "Команды:\n"
         "/start — главное меню\n"
         "/reset — начать диалог заново\n"
-        "/manager — связаться с менеджером",
+        "/manager — связаться с менеджером\n"
+        "/kb текст — добавить правку в базу знаний\n"
+        "/kblist — список правок\n"
+        "/kbdel N — удалить правку\n"
+        "/kbclear — очистить все правки\n"
+        "/kbstatus — статус базы знаний\n"
+        "/testlead — тест уведомления менеджеру"
     )
 
 
-# ─────────────────────────────────────────────
-# /kbstatus — проверить правки из чата
-# ─────────────────────────────────────────────
+@router.message(Command("manager"))
+async def cmd_manager(message: Message, bot: Bot):
+    await _escalate(message, bot, reason="Пользователь запросил менеджера")
 
-@router.message(Command("kbstatus"))
-async def cmd_kbstatus(message: Message, bot: Bot):
-    from kb_updater import get_kb_updates
-    from config import KB_CHAT_ID
-    if not KB_CHAT_ID:
-        await message.answer("KB_CHAT_ID не задан в переменных окружения.")
-        return
-    msgs = get_kb_messages()
-    if msgs:
-        text = "\n".join(f"- {m}" for m in msgs)
-        await message.answer(f"Правок загружено: {len(msgs)}\n\n{text[:1000]}")
-    else:
-        await message.answer(f"Чат {KB_CHAT_ID} подключён, правок пока нет.\n\nНапишите что-нибудь в чат правок — бот подхватит сразу.")
-
-# ─────────────────────────────────────────────
-# /kblist — список правок
-# ─────────────────────────────────────────────
-
-@router.message(Command("kblist"))
-async def cmd_kblist(message: Message, bot: Bot):
-    msgs = get_kb_messages()
-    if not msgs:
-        await message.answer("Правок пока нет.")
-        return
-    text = "\n".join(f"{i+1}. {m[:100]}" for i, m in enumerate(msgs))
-    await message.answer(f"Правок: {len(msgs)}\n\n{text}\n\nЧтобы удалить: /kbdel [номер]\nОчистить все: /kbclear")
-
-# ─────────────────────────────────────────────
-# /kbdel — удалить правку по номеру
-# ─────────────────────────────────────────────
-
-@router.message(Command("kbdel"))
-async def cmd_kbdel(message: Message, bot: Bot):
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.answer("Укажите номер правки: /kbdel 3")
-        return
-    index = int(args[1]) - 1
-    if remove_kb_message(index):
-        await message.answer(f"✅ Правка {args[1]} удалена.")
-    else:
-        await message.answer("Правка с таким номером не найдена.")
-
-# ─────────────────────────────────────────────
-# /kbclear — очистить все правки
-# ─────────────────────────────────────────────
-
-@router.message(Command("kbclear"))
-async def cmd_kbclear(message: Message, bot: Bot):
-    clear_kb()
-    await message.answer("✅ Все правки удалены.")
-
-# ─────────────────────────────────────────────
-# /kb — добавить правку напрямую
-# ─────────────────────────────────────────────
 
 @router.message(Command("kb"))
 async def cmd_kb(message: Message, bot: Bot):
@@ -170,55 +89,74 @@ async def cmd_kb(message: Message, bot: Bot):
         return
     add_kb_message(text)
     msgs = get_kb_messages()
-    await message.answer(f"✅ Сохранено. Всего правок: {len(msgs)}")
+    await message.answer(f"Сохранено. Всего правок: {len(msgs)}")
 
-# ─────────────────────────────────────────────
-# /testlead — тест уведомления менеджеру
-# ─────────────────────────────────────────────
+
+@router.message(Command("kbstatus"))
+async def cmd_kbstatus(message: Message, bot: Bot):
+    msgs = get_kb_messages()
+    if msgs:
+        await message.answer(f"Правок: {len(msgs)}")
+    else:
+        await message.answer("Правок пока нет.")
+
+
+@router.message(Command("kblist"))
+async def cmd_kblist(message: Message, bot: Bot):
+    msgs = get_kb_messages()
+    if not msgs:
+        await message.answer("Правок пока нет.")
+        return
+    text = "\n".join(f"{i+1}. {m[:100]}" for i, m in enumerate(msgs))
+    await message.answer(f"Правок: {len(msgs)}\n\n{text}\n\nУдалить: /kbdel [номер]\nОчистить: /kbclear")
+
+
+@router.message(Command("kbdel"))
+async def cmd_kbdel(message: Message, bot: Bot):
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("Укажите номер: /kbdel 3")
+        return
+    if remove_kb_message(int(args[1]) - 1):
+        await message.answer(f"Правка {args[1]} удалена.")
+    else:
+        await message.answer("Правка не найдена.")
+
+
+@router.message(Command("kbclear"))
+async def cmd_kbclear(message: Message, bot: Bot):
+    clear_kb()
+    await message.answer("Все правки удалены.")
+
 
 @router.message(Command("testlead"))
 async def cmd_testlead(message: Message, bot: Bot):
-    from config import MANAGER_CHAT_ID
     await message.answer(f"Отправляю тест на MANAGER_CHAT_ID: {MANAGER_CHAT_ID}")
     if not MANAGER_CHAT_ID:
-        await message.answer("❌ MANAGER_CHAT_ID не задан в переменных окружения!")
+        await message.answer("MANAGER_CHAT_ID не задан!")
         return
     try:
-        await bot.send_message(
-            MANAGER_CHAT_ID,
-            "✅ Тест уведомления работает! Бот может писать менеджеру."
-        )
-        await message.answer("✅ Сообщение отправлено менеджеру — проверьте тот аккаунт")
+        await bot.send_message(MANAGER_CHAT_ID, "Тест уведомления работает!")
+        await message.answer("Сообщение отправлено менеджеру — проверьте тот аккаунт")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"Ошибка: {e}")
 
-# ─────────────────────────────────────────────
-# /manager — ручная эскалация
-# ─────────────────────────────────────────────
-
-@router.message(Command("manager"))
-async def cmd_manager(message: Message, bot: Bot):
-    await _escalate(message, bot, reason="Пользователь запросил менеджера вручную")
-
-
-# ─────────────────────────────────────────────
-# Inline кнопки
-# ─────────────────────────────────────────────
 
 @router.callback_query(F.data == "info_prices")
 async def cb_prices(callback):
     await callback.answer()
     await callback.message.answer(
         "Тарифы Revit Server:\n\n"
-        "- 2–4 чел. — 8 900 руб/мес\n"
-        "- 5–8 чел. — 11 200 руб/мес\n"
-        "- 9–15 чел. — 14 600 руб/мес\n"
-        "- от 15 чел. — от 17 500 руб/мес\n\n"
+        "- 2-4 чел. — 8 900 руб/мес\n"
+        "- 5-8 чел. — 12 600 руб/мес\n"
+        "- 9-15 чел. — 16 000 руб/мес\n"
+        "- от 15 чел. — от 21 500 руб/мес\n\n"
         "Виртуальное рабочее место (VDI):\n\n"
-        "- BIM-Start — 10 500 руб/мес\n"
-        "- BIM-Standart — 12 500 руб/мес\n"
-        "- BIM-Pro — 16 000 руб/мес\n\n"
-        "Сколько человек в команде — подберу подходящий вариант.",
+        "- BIM-Start — 12 500 руб/мес\n"
+        "- BIM-Standart — 13 800 руб/мес\n"
+        "- BIM-Pro — 17 800 руб/мес\n"
+        "- BIM-Render (с GPU) — от 28 500 руб/мес\n\n"
+        "Сколько человек в команде?"
     )
 
 
@@ -226,8 +164,8 @@ async def cb_prices(callback):
 async def cb_trial(callback):
     await callback.answer()
     await callback.message.answer(
-        "Бесплатный тест — 7 дней, без предоплаты.\n\n"
-        "Напишите сколько человек в команде и версию Revit — оформим доступ за 1-2 часа.",
+        "Тест-драйв бесплатно: Revit Server — 7 дней, VDI — 5 дней. Без предоплаты.\n\n"
+        "Напишите сколько человек в команде и версию Revit — оформим доступ."
     )
 
 
@@ -236,8 +174,8 @@ async def cb_revit_server(callback):
     await callback.answer()
     await callback.message.answer(
         "Revit Server — сервер для совместной работы над BIM-моделями.\n\n"
-        "Готово за 1-2 часа после оплаты. Бэкапы, VPN, сетевой диск — включены.\n\n"
-        "Сколько человек в команде?",
+        "Бэкапы, VPN, сетевой диск — включены. Версии Revit 2019-2027.\n\n"
+        "Сколько человек в команде?"
     )
 
 
@@ -246,38 +184,35 @@ async def cb_vdi(callback):
     await callback.answer()
     await callback.message.answer(
         "Виртуальное рабочее место — Windows в облаке с Revit и AutoCAD.\n\n"
-        "Подходит для удалённых команд или если слабое железо на местах. От 10 500 руб/мес.\n\n"
-        "Расскажите о вашей задаче — подберём конфигурацию.",
+        "Полные права администратора, SSH, любой софт. От 12 500 руб/мес.\n\n"
+        "Расскажите о вашей задаче."
     )
 
 
 @router.callback_query(F.data == "escalate_manual")
 async def cb_escalate_manual(callback, bot: Bot):
     await callback.answer()
-    await _escalate(callback.message, bot, reason="Пользователь нажал кнопку 'Связаться с менеджером'",
-                    user_id=callback.from_user.id,
-                    username=callback.from_user.username,
-                    full_name=callback.from_user.full_name)
+    await _escalate(
+        callback.message, bot,
+        reason="Пользователь нажал кнопку 'Связаться с менеджером'",
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+        full_name=callback.from_user.full_name
+    )
 
-
-# ─────────────────────────────────────────────
-# Обработчик сообщений из чата с правками БЗ
-# ─────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────
-# Обработчик фото
-# ─────────────────────────────────────────────
 
 @router.message(F.photo)
-async def handle_photo(message: Message, bot: Bot):  # noqa
+async def handle_photo(message: Message, bot: Bot):
     chat_id = message.chat.id
-
     if dialog_manager.is_escalated(chat_id):
         return
 
-    # Скачиваем фото
-    photo = message.photo[-1]  # берём максимальное качество
+    # Группируем фото как и текстовые сообщения
+    if chat_id in _pending:
+        _pending[chat_id].cancel()
+        del _pending[chat_id]
+
+    photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
     file_url = f"https://api.telegram.org/file/bot{bot.token}/{file.file_path}"
 
@@ -285,68 +220,25 @@ async def handle_photo(message: Message, bot: Bot):  # noqa
         resp = await client.get(file_url)
         image_data = base64.b64encode(resp.content).decode("utf-8")
 
-    # Текст от пользователя если есть
     caption = message.caption or "Посмотри на этот скриншот и помоги разобраться с проблемой."
 
-    # Добавляем в историю как сообщение с картинкой
     user_message = {
         "role": "user",
         "content": [
             {
                 "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": image_data,
-                }
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}
             },
-            {
-                "type": "text",
-                "text": caption
-            }
+            {"type": "text", "text": caption}
         ]
     }
 
     dialog_manager._histories[chat_id].append(user_message)
     dialog_manager._message_counts[chat_id] += 1
 
-    await bot.send_chat_action(chat_id, "typing")
-
-    history = dialog_manager.get_history(chat_id)
-    response_text, should_escalate, escalation_reason = await ask_claude(history)
-
-    dialog_manager.add_assistant_message(chat_id, response_text)
-
-    if response_text:
-        await message.answer(clean_markdown(response_text))
-
-    if should_escalate:
-        await _escalate(message, bot, reason=escalation_reason)
-
-# ─────────────────────────────────────────────
-# Основной обработчик сообщений
-# ─────────────────────────────────────────────
-
-@router.message(F.text)
-async def handle_message(message: Message, bot: Bot):
-    chat_id = message.chat.id
-    user_text = message.text.strip()
-
-    # Если уже эскалирован — не отвечаем (менеджер ведёт диалог)
-    if dialog_manager.is_escalated(chat_id):
-        return
-
-    # Добавляем сообщение пользователя в историю
-    dialog_manager.add_user_message(chat_id, user_text)
-
-    # Группировка быстрых сообщений — ждём 2.5 сек, если придёт новое — оно само ответит
-    if chat_id in _pending:
-        _pending[chat_id].cancel()
-        del _pending[chat_id]
-
-    async def delayed_response():
+    async def delayed_photo_response():
         try:
-            await asyncio.sleep(2.5)
+            await asyncio.sleep(4)
             if chat_id in _pending:
                 del _pending[chat_id]
             await bot.send_chat_action(chat_id, "typing")
@@ -357,13 +249,53 @@ async def handle_message(message: Message, bot: Bot):
                 await message.answer(clean_markdown(response_text))
             if should_escalate:
                 await _escalate(message, bot, reason=escalation_reason)
+        except asyncio.CancelledError:
+            pass
+
+    task = asyncio.create_task(delayed_photo_response())
+    _pending[chat_id] = task
+
+
+@router.message(F.text)
+async def handle_message(message: Message, bot: Bot):
+    chat_id = message.chat.id
+    user_text = message.text.strip()
+
+    if dialog_manager.is_escalated(chat_id):
+        return
+
+    dialog_manager.add_user_message(chat_id, user_text)
+
+    if chat_id in _pending:
+        _pending[chat_id].cancel()
+        del _pending[chat_id]
+
+    async def delayed_response():
+        try:
+            await asyncio.sleep(4)
+            if chat_id in _pending:
+                del _pending[chat_id]
+
+            await bot.send_chat_action(chat_id, "typing")
+
+            history = dialog_manager.get_history(chat_id)
+            response_text, should_escalate, escalation_reason = await ask_claude(history)
+            dialog_manager.add_assistant_message(chat_id, response_text)
+
+            if response_text:
+                await message.answer(clean_markdown(response_text))
+
+            if should_escalate:
+                await _escalate(message, bot, reason=escalation_reason)
+                return
+
             count = dialog_manager.get_message_count(chat_id)
             if count == ESCALATION_THRESHOLD:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="👨‍💼 Поговорить с менеджером", callback_data="escalate_manual"),
+                    InlineKeyboardButton(text="Поговорить с менеджером", callback_data="escalate_manual"),
                 ]])
                 await message.answer(
-                    "Если хотите — могу передать вас живому специалисту.",
+                    "Если нужно — могу передать вас менеджеру.",
                     reply_markup=keyboard,
                 )
         except asyncio.CancelledError:
@@ -371,47 +303,6 @@ async def handle_message(message: Message, bot: Bot):
 
     task = asyncio.create_task(delayed_response())
     _pending[chat_id] = task
-    return
-
-    # Показываем "печатает..."
-    await bot.send_chat_action(chat_id, "typing")
-
-    # Запрашиваем ответ у Claude
-    history = dialog_manager.get_history(chat_id)
-    response_text, should_escalate, escalation_reason = await ask_claude(history)
-
-    # Сохраняем ответ ассистента
-    dialog_manager.add_assistant_message(chat_id, response_text)
-
-    # Отправляем ответ пользователю (очищаем markdown)
-    if response_text:
-        await message.answer(clean_markdown(response_text))
-
-    # Эскалация по решению Claude
-    if should_escalate:
-        await _escalate(
-            message, bot,
-            reason=escalation_reason,
-            notify_user=not bool(response_text),  # если Claude уже написал про менеджера
-        )
-        return
-
-    # Предлагаем менеджера после N сообщений
-    count = dialog_manager.get_message_count(chat_id)
-    if count == ESCALATION_THRESHOLD:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👨‍💼 Поговорить с менеджером", callback_data="escalate_manual"),
-        ]])
-        await message.answer(
-            "Если хотите — могу передать вас живому специалисту, "
-            "который ответит на все вопросы и поможет с оформлением.",
-            reply_markup=keyboard,
-        )
-
-
-# ─────────────────────────────────────────────
-# Вспомогательная функция эскалации
-# ─────────────────────────────────────────────
 
 
 async def _escalate(
@@ -426,18 +317,16 @@ async def _escalate(
     chat_id = message.chat.id
     dialog_manager.mark_escalated(chat_id)
 
-    uid = user_id or message.from_user.id if message.from_user else chat_id
+    uid = user_id or (message.from_user.id if message.from_user else chat_id)
     uname = username or (message.from_user.username if message.from_user else None)
     fname = full_name or (message.from_user.full_name if message.from_user else "Неизвестно")
 
-    # Уведомляем пользователя
     if notify_user:
         await message.answer(
             "Передаю вас менеджеру, он свяжется в ближайшее время.\n\n"
             "Можете также написать напрямую: @revitserver"
         )
 
-    # Уведомляем менеджера
     if MANAGER_CHAT_ID:
         history = dialog_manager.get_history(chat_id)
 
@@ -446,15 +335,14 @@ async def _escalate(
             if isinstance(c, str):
                 return c[:200]
             if isinstance(c, list):
-                # Есть картинки — берём только текстовые части
                 texts = [p.get('text', '') for p in c if isinstance(p, dict) and p.get('type') == 'text']
                 return ' '.join(texts)[:200] + ' [фото]'
             return str(c)[:200]
 
         history_lines = []
         for m in history[-10:]:
-            icon = '👤' if m['role'] == 'user' else '🤖'
-            history_lines.append(f"{icon} {get_content_text(m)}")
+            icon = 'Клиент' if m['role'] == 'user' else 'Бот'
+            history_lines.append(f"{icon}: {get_content_text(m)}")
         history_text = "\n".join(history_lines)
 
         user_link = f"@{uname}" if uname else f"{fname} (id:{uid})"
