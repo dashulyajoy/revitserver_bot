@@ -11,8 +11,8 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from claude_client import ask_claude
 from dialog_manager import dialog_manager
-from config import MANAGER_CHAT_ID, ESCALATION_THRESHOLD, KB_CHAT_ID
-from kb_updater import add_kb_message, get_kb_messages, remove_kb_message, clear_kb
+from config import MANAGER_CHAT_ID, ESCALATION_THRESHOLD
+from kb_corrections import consume_correction, fix_keyboard, remember, is_awaiting
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -63,83 +63,17 @@ async def cmd_reset(message: Message):
 async def cmd_help(message: Message):
     await message.answer(
         "Бот поддержки RevitServer.ru\n\n"
-        "Команды:\n"
-        "/start — главное меню\n"
-        "/reset — начать диалог заново\n"
-        "/manager — связаться с менеджером\n"
-        "/kb текст — добавить правку в базу знаний\n"
-        "/kblist — список правок\n"
-        "/kbdel N — удалить правку\n"
-        "/kbclear — очистить все правки\n"
-        "/kbstatus — статус базы знаний\n"
-        "/testlead — тест уведомления менеджеру"
+        "/start - главное меню\n"
+        "/reset - начать диалог заново\n"
+        "/manager - связаться с менеджером\n\n"
+        "Если бот ответил неточно, нажмите под его ответом кнопку «поправить» "
+        "или ответьте на это сообщение реплаем - правка попадёт в базу знаний."
     )
 
 
 @router.message(Command("manager"))
 async def cmd_manager(message: Message, bot: Bot):
     await _escalate(message, bot, reason="Пользователь запросил менеджера")
-
-
-@router.message(Command("kb"))
-async def cmd_kb(message: Message, bot: Bot):
-    text = message.text.replace("/kb", "", 1).strip()
-    if not text:
-        await message.answer("Напишите правку после команды:\n/kb Текст правки")
-        return
-    add_kb_message(text)
-    msgs = get_kb_messages()
-    await message.answer(f"Сохранено. Всего правок: {len(msgs)}")
-
-
-@router.message(Command("kbstatus"))
-async def cmd_kbstatus(message: Message, bot: Bot):
-    msgs = get_kb_messages()
-    if msgs:
-        await message.answer(f"Правок: {len(msgs)}")
-    else:
-        await message.answer("Правок пока нет.")
-
-
-@router.message(Command("kblist"))
-async def cmd_kblist(message: Message, bot: Bot):
-    msgs = get_kb_messages()
-    if not msgs:
-        await message.answer("Правок пока нет.")
-        return
-    text = "\n".join(f"{i+1}. {m[:100]}" for i, m in enumerate(msgs))
-    await message.answer(f"Правок: {len(msgs)}\n\n{text}\n\nУдалить: /kbdel [номер]\nОчистить: /kbclear")
-
-
-@router.message(Command("kbdel"))
-async def cmd_kbdel(message: Message, bot: Bot):
-    args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        await message.answer("Укажите номер: /kbdel 3")
-        return
-    if remove_kb_message(int(args[1]) - 1):
-        await message.answer(f"Правка {args[1]} удалена.")
-    else:
-        await message.answer("Правка не найдена.")
-
-
-@router.message(Command("kbclear"))
-async def cmd_kbclear(message: Message, bot: Bot):
-    clear_kb()
-    await message.answer("Все правки удалены.")
-
-
-@router.message(Command("testlead"))
-async def cmd_testlead(message: Message, bot: Bot):
-    await message.answer(f"Отправляю тест на MANAGER_CHAT_ID: {MANAGER_CHAT_ID}")
-    if not MANAGER_CHAT_ID:
-        await message.answer("MANAGER_CHAT_ID не задан!")
-        return
-    try:
-        await bot.send_message(MANAGER_CHAT_ID, "Тест уведомления работает!")
-        await message.answer("Сообщение отправлено менеджеру — проверьте тот аккаунт")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
 
 
 @router.callback_query(F.data == "info_prices")
@@ -246,7 +180,10 @@ async def handle_photo(message: Message, bot: Bot):
             response_text, should_escalate, escalation_reason = await ask_claude(history)
             dialog_manager.add_assistant_message(chat_id, response_text)
             if response_text:
-                await message.answer(clean_markdown(response_text))
+                clean = clean_markdown(response_text)
+                sent = await message.answer(clean, reply_markup=fix_keyboard(0))
+                await sent.edit_reply_markup(reply_markup=fix_keyboard(sent.message_id))
+                remember(sent.message_id, caption, clean)
             if should_escalate:
                 await _escalate(message, bot, reason=escalation_reason)
         except asyncio.CancelledError:
@@ -260,6 +197,12 @@ async def handle_photo(message: Message, bot: Bot):
 async def handle_message(message: Message, bot: Bot):
     chat_id = message.chat.id
     user_text = message.text.strip()
+
+    # Сообщение может быть правкой к базе знаний: либо бот её ждёт после
+    # нажатия кнопки, либо это реплай на его ответ. Тогда в диалог не ведём.
+    if is_awaiting(message.from_user.id) or message.reply_to_message:
+        if await consume_correction(message, bot):
+            return
 
     if dialog_manager.is_escalated(chat_id):
         return
@@ -283,7 +226,11 @@ async def handle_message(message: Message, bot: Bot):
             dialog_manager.add_assistant_message(chat_id, response_text)
 
             if response_text:
-                await message.answer(clean_markdown(response_text))
+                clean = clean_markdown(response_text)
+                sent = await message.answer(clean, reply_markup=fix_keyboard(0))
+                # callback_data нужен реальный id, он известен только после отправки
+                await sent.edit_reply_markup(reply_markup=fix_keyboard(sent.message_id))
+                remember(sent.message_id, user_text, clean)
 
             if should_escalate:
                 await _escalate(message, bot, reason=escalation_reason)
