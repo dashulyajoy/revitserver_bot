@@ -11,7 +11,7 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from claude_client import ask_claude
 from dialog_manager import dialog_manager
-from config import MANAGER_CHAT_ID, ESCALATION_THRESHOLD
+from config import MANAGER_CHAT_ID
 from kb_corrections import consume_correction, fix_keyboard, remember, is_awaiting
 
 logger = logging.getLogger(__name__)
@@ -138,9 +138,6 @@ async def cb_escalate_manual(callback, bot: Bot):
 @router.message(F.photo)
 async def handle_photo(message: Message, bot: Bot):
     chat_id = message.chat.id
-    if dialog_manager.is_escalated(chat_id):
-        return
-
     # Группируем фото как и текстовые сообщения
     if chat_id in _pending:
         _pending[chat_id].cancel()
@@ -204,9 +201,6 @@ async def handle_message(message: Message, bot: Bot):
         if await consume_correction(message, bot):
             return
 
-    if dialog_manager.is_escalated(chat_id):
-        return
-
     dialog_manager.add_user_message(chat_id, user_text)
 
     if chat_id in _pending:
@@ -236,17 +230,13 @@ async def handle_message(message: Message, bot: Bot):
                 await _escalate(message, bot, reason=escalation_reason)
                 return
 
-            count = dialog_manager.get_message_count(chat_id)
-            if count == ESCALATION_THRESHOLD:
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Поговорить с менеджером", callback_data="escalate_manual"),
-                ]])
-                await message.answer(
-                    "Если нужно — могу передать вас менеджеру.",
-                    reply_markup=keyboard,
-                )
         except asyncio.CancelledError:
-            pass
+            raise
+        except Exception as e:
+            logger.error("Ошибка при ответе: %s", e)
+            await message.answer(
+                "Что-то пошло не так при обращении к модели. Попробуйте повторить."
+            )
 
     task = asyncio.create_task(delayed_response())
     _pending[chat_id] = task
@@ -262,7 +252,6 @@ async def _escalate(
     full_name: str = None,
 ):
     chat_id = message.chat.id
-    dialog_manager.mark_escalated(chat_id)
 
     uid = user_id or (message.from_user.id if message.from_user else chat_id)
     uname = username or (message.from_user.username if message.from_user else None)
