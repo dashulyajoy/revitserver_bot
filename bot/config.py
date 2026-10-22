@@ -6,8 +6,10 @@ load_dotenv()
 # === Telegram ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
-# === Anthropic ===
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# === Языковая модель (DeepSeek) ===
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
 # === Уведомления менеджеру ===
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID", "")
@@ -15,7 +17,8 @@ MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID", "")
 # === Настройки бота ===
 MAX_HISTORY_MESSAGES = 20
 ESCALATION_THRESHOLD = 6
-CLAUDE_MAX_TOKENS = 1024
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 
 # === Правки к базе знаний ===
 # Приватный канал, где живут правки. Закреплённое сообщение - действующий
