@@ -54,9 +54,15 @@ def _to_openai(history: list[dict]) -> tuple[list[dict], bool]:
     return out, has_image
 
 
-async def ask_claude(history: list[dict]) -> tuple[str, bool, str]:
+async def ask_claude(history: list[dict],
+                     extra_system: str = "") -> tuple[str, bool, str]:
     """
     Имя функции оставлено прежним, чтобы не менять handlers.py.
+
+    extra_system - дополнительные правила поверх базы знаний.
+    Используется в бизнес-режиме: там бот пишет клиенту, и правила
+    строже, чем в личной переписке с владельцем.
+
     Возвращает тройку (текст ответа, признак эскалации, причина) -
     эскалация больше не используется и всегда False.
     """
@@ -66,7 +72,10 @@ async def ask_claude(history: list[dict]) -> tuple[str, bool, str]:
 
     kb_updates = await get_kb_updates()
     messages, has_image = _to_openai(history)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT + kb_updates}] + messages
+    system = SYSTEM_PROMPT + kb_updates
+    if extra_system:
+        system += "\n\n" + extra_system
+    messages = [{"role": "system", "content": system}] + messages
 
     payload = {
         "model": DEEPSEEK_MODEL,
