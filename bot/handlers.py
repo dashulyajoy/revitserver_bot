@@ -19,6 +19,21 @@ router = Router()
 
 _pending: dict[int, asyncio.Task] = {}
 
+# Номер последнего сообщения в чате. Нужен из-за гонки: пока бот скачивает
+# фото, успевает прийти следующее, и оба отложенных ответа проскакивают.
+# Каждый ответ запоминает свой номер и перед отправкой проверяет,
+# не пришло ли что-то новее. Если пришло - молча уходит.
+_seq: dict[int, int] = {}
+
+
+def _next_seq(chat_id: int) -> int:
+    _seq[chat_id] = _seq.get(chat_id, 0) + 1
+    return _seq[chat_id]
+
+
+def _is_latest(chat_id: int, mine: int) -> bool:
+    return _seq.get(chat_id) == mine
+
 
 def clean_markdown(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
@@ -138,10 +153,14 @@ async def cb_escalate_manual(callback, bot: Bot):
 @router.message(F.photo)
 async def handle_photo(message: Message, bot: Bot):
     chat_id = message.chat.id
-    # Группируем фото как и текстовые сообщения
-    if chat_id in _pending:
-        _pending[chat_id].cancel()
-        del _pending[chat_id]
+
+    # Номер берём сразу, до скачивания: пока качается это фото,
+    # может прийти следующее, и тогда отвечать должно только оно.
+    mine = _next_seq(chat_id)
+
+    task = _pending.pop(chat_id, None)
+    if task:
+        task.cancel()
 
     photo = message.photo[-1]
     file = await bot.get_file(photo.file_id)
@@ -170,8 +189,9 @@ async def handle_photo(message: Message, bot: Bot):
     async def delayed_photo_response():
         try:
             await asyncio.sleep(4)
-            if chat_id in _pending:
-                del _pending[chat_id]
+            _pending.pop(chat_id, None)
+            if not _is_latest(chat_id, mine):
+                return
             await bot.send_chat_action(chat_id, "typing")
             history = dialog_manager.get_history(chat_id)
             response_text, should_escalate, escalation_reason = await ask_claude(history)
@@ -201,17 +221,19 @@ async def handle_message(message: Message, bot: Bot):
         if await consume_correction(message, bot):
             return
 
+    mine = _next_seq(chat_id)
     dialog_manager.add_user_message(chat_id, user_text)
 
-    if chat_id in _pending:
-        _pending[chat_id].cancel()
-        del _pending[chat_id]
+    task = _pending.pop(chat_id, None)
+    if task:
+        task.cancel()
 
     async def delayed_response():
         try:
             await asyncio.sleep(4)
-            if chat_id in _pending:
-                del _pending[chat_id]
+            _pending.pop(chat_id, None)
+            if not _is_latest(chat_id, mine):
+                return
 
             await bot.send_chat_action(chat_id, "typing")
 
